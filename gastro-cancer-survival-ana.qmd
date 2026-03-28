@@ -1,0 +1,104 @@
+---
+title: "gastric-cancer-survival-analysis"
+format: html
+editor: visual
+---
+
+```{r}
+# Only need to run this once
+# install.packages("survminer")   # for beautiful Kaplan-Meier plots
+# install.packages("dplyr")       # for data wrangling
+# install.packages("ggplot2")     # for plotting
+# install.packages("dplyr")
+# install.packages("knitr")
+```
+
+```{r}
+library(survival)
+library(dplyr)
+```
+
+------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+## Dataset
+
+GSE84437 includes gene expression profile data from 433 patients with primary gastric cancer. Alongside the gene expression data, it also contains detailed clinical characteristics such as gender, age, T stage, N stage, survival time, and survival status.
+
+```{r}
+library(GEOquery)
+gse <- getGEO("GSE84437", GSEMatrix = TRUE)
+```
+
+Let us load the data:
+
+```{r}
+eset <- gse[[1]]         # ExpressionSet object
+expr   <- exprs(eset)    # matrix: rows = probes/genes, cols = patients 
+pheno  <- pData(eset)    # data.frame: rows = patients, cols = clinical variables
+features <- fData(eset)  # data.frame: probe ID to gene symbol mapping
+
+dim(expr)      # e.g., 47323 probes × 433 patients
+head(pheno)    # see what clinical columns are available
+```
+
+```{r}
+colnames(pheno)
+```
+
+Let us look at the columns essential for our analysis:
+
+## `death:ch1` — the event indicator
+
+This is what Cox regression calls the **event status** or **censoring indicator**. It tells you:
+
+-   `1` = the patient **died** during the study follow-up period
+
+-   `0` = the patient was **still alive** when the study ended (called **censored**)
+
+Censored means: we don't know when or if they die, we just know they were alive up to a certain point. Cox regression handles this elegantly — it doesn't throw those patients away, it uses the information "survived at least this long."
+
+## `duration overall survival:ch1` — the time variable
+
+This is the **survival time** — how long the patient was followed from diagnosis until either:
+
+-   They **died** (if `death = 1`), or
+
+-   The **study ended / they were lost to follow-up** (if `death = 0`)
+
+It's typically measured in **months** or **days**.
+
+```{r}
+pheno$time  <- as.numeric(pheno$`duration overall survival:ch1`)
+pheno$event <- as.numeric(pheno$`death:ch1`)
+```
+
+```{r}
+surv_object <- Surv(time  = pheno$time, event = pheno$event)
+```
+
+```{r}
+pheno <- pheno %>%
+  mutate(
+    time   = as.numeric(`duration overall survival:ch1`),
+    event  = as.numeric(`death:ch1`),
+    age    = as.numeric(`age:ch1`),
+    sex    = as.factor(`Sex:ch1`),
+    tstage = as.factor(`ptstage:ch1`),
+    nstage = as.factor(`pnstage:ch1`)
+  )
+```
+
+```{r}
+head(pheno$`age`)
+head(pheno$`sex`)
+```
+
+```{r}
+cox_model <- coxph(surv_object ~ age + sex, data = pheno)
+```
+
+```{r}
+summary(cox_model)
+```
