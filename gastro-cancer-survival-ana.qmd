@@ -4,6 +4,10 @@ format: html
 editor: visual
 ---
 
+# Gastric cancer survival analysis
+
+Gastric cancer is one of the leading causes of cancer-related mortality worldwide, with overall survival strongly influenced by tumour stage at diagnosis. While TNM staging provides essential prognostic information, patients within the same stage group show considerable variation in outcomes, suggesting that molecular factors not captured by pathological staging play an important role. This analysis uses genome-wide gene expression data from 433 primary gastric cancer patients (GSE84437) to identify genes whose expression is associated with overall survival independently of age, T stage, and N stage. By combining Cox proportional hazards regression with false discovery rate correction, we aim to identify candidate prognostic biomarkers that could complement clinical staging and potentially guide treatment decisions.
+
 ```{r}
 # Only need to run this once
 # install.packages("survminer")   # for beautiful Kaplan-Meier plots
@@ -318,22 +322,7 @@ sum(is.na(pheno$event))
 ```
 
 ```{r}
-# expr <- exprs(eset)    # matrix: rows = probes/genes, cols = patients
-# features <- fData(eset)  # probe ID → gene symbol mapping
-
-# We filtered out a few pheno rows so we filter them out
-# expr  <- expr[, rownames(pheno)]
-
-# Check what the gene symbol column is called
-dim(expr)
-dim(features)
-```
-
-```{r}
-expr <- expr[, rownames(pheno)]  # align patients
-
 # Some genes have no expression data
-# ToDo: double check
 dim(expr)
 expr <- expr[rowSums(!is.na(expr)) > 0, ]
 dim(expr)
@@ -376,7 +365,6 @@ Before we continue let us check if the PH assumptions also hold for the genetic 
 ```{r}
 gene_of_interest <- "LOXL4"  # replace with any gene of choice
 pheno$gene <- as.numeric(expr_log[gene_of_interest, ])
-# fit <- coxph(Surv(time, event) ~ gene + age, data = pheno)
 fit <- coxph(surv_object ~ gene + age + strata(tstage_collapsed) + strata(nstage), data = pheno)
 test_ph <- cox.zph(fit)
 plot(test_ph)  # For a visual check. This should resemble a flat line around 0
@@ -400,26 +388,16 @@ sig_genes <- sig_genes[order(sig_genes$fdr), ]
 nrow(sig_genes)
 ```
 
-Let us look at some of them:
+Only one gene is significantly asssociated with a different survival rate.
 
 ```{r}
 head(sig_genes)
 ```
 
-These genes associate with survival **independently of age, T stage, and N stage**.
+This gene associates with survival **independently of age, T stage, and N stage**. Before we look at the effect size let us check the distribution of the gene expression of LOXL4.
 
 ```{r}
-gene_of_interest <- "LOXL4"  # replace with any gene of choice
-pheno$gene <- as.numeric(expr_log[gene_of_interest, ])
-fit <- coxph(surv_object ~ gene + age + strata(tstage_collapsed) + strata(nstage), data = pheno)
-
-summary(fit)
-```
-
-Let us look at the distribution of the expression levels of LOXL4.
-
-```{r}
-pheno$LOXL4 <- as.numeric(expr_log["LOXL4", ])
+pheno$LOXL4   <- as.numeric(expr_log["LOXL4", ])
 ggplot(pheno, aes(x = LOXL4 )) +
   geom_histogram(bins = 30, fill = "steelblue", color = "white") +
   geom_vline(xintercept = median(pheno$LOXL4), 
@@ -434,6 +412,8 @@ ggplot(pheno, aes(x = LOXL4 )) +
 summary(as.numeric(expr_log["LOXL4", ]))
 ```
 
+Now let us look at the effect size. We rescale the expression levels to obtain the effect size in terms of standard deviations of gene expressions.
+
 ```{r}
 # We rescale from gene expression to standard deviation after log transformation. 
 # => Each HR represents the effect of a 1 standard deviation increase in expression
@@ -447,7 +427,6 @@ Let us look at samples that influence the result overly.
 
 ```{r}
 ggcoxdiagnostics(fit, type = "dfbeta")
-
 ```
 
 ```{r}
@@ -512,3 +491,13 @@ ggsurvplot(
   title      = "Kaplan-Meier Survival Curves by LOXL4 expression"
 )
 ```
+
+## Biological interpretation
+
+We find the following in the literature:
+
+LOXL4 (Lysyl Oxidase Like 4) encodes an extracellular matrix enzyme involved in collagen and elastin crosslinking, which promotes tumour stiffening and facilitates invasion and metastasis. Elevated LOXL4 expression has been previously implicated in tumour progression across multiple cancer types, and its association with worse survival in this cohort — independently of clinical stage — suggests it may reflect an aggressive tumour microenvironment biology not captured by conventional staging.
+
+## Outlook
+
+These findings are exploratory in nature and require validation in an independent gastric cancer cohort before any clinical conclusions can be drawn.
