@@ -11,11 +11,16 @@ editor: visual
 # install.packages("ggplot2")     # for plotting
 # install.packages("dplyr")
 # install.packages("knitr")
+# install.packages("forcats")
 ```
 
 ```{r}
 library(survival)
 library(dplyr)
+library(ggplot2)
+library(GEOquery)
+library(forcats)
+library(survminer)
 ```
 
 ------------------------------------------------------------------------
@@ -27,8 +32,9 @@ library(dplyr)
 GSE84437 includes gene expression profile data from 433 patients with primary gastric cancer. Alongside the gene expression data, it also contains detailed clinical characteristics such as gender, age, T stage, N stage, survival time, and survival status.
 
 ```{r}
-library(GEOquery)
-gse <- getGEO("GSE84437", GSEMatrix = TRUE)
+gse_dir <- "/Users/robert/Documents/private_projects/gastro/data/GEO"
+dir.create(gse_dir, recursive = TRUE, showWarnings = FALSE)
+gse <- getGEO("GSE84437", GSEMatrix = TRUE, destdir = gse_dir)
 ```
 
 Let us load the data:
@@ -44,7 +50,83 @@ head(pheno)    # see what clinical columns are available
 ```
 
 ```{r}
+head(features)
+```
+
+We have:
+
+-   **`expr`** (49,576 × 433)
+
+    -   Rows = probes/genes
+
+    -   Columns = patients
+
+    -   Values = gene expression levels (numbers)
+
+-   **`pheno`** (433 × \~40)
+
+    -   Rows = patients
+
+    -   Columns = clinical variables (age, sex, survival time, death, stage...)
+
+    -   The patient IDs link `pheno` rows ↔ `expr` columns
+
+-   **`features`** (49,576 × 30)
+
+    -   Rows = probes
+
+    -   Columns = probe annotations (ID, gene symbol, chromosome...)
+
+    -   The probe IDs link `features` rows ↔ `expr` rows
+
+A **probe** is a short DNA sequence on the microarray chip designed to detect a specific gene.
+
+-   **One gene can have multiple probes** — the same gene might be measured by 2-5 different probes on the chip, as a redundancy measure.
+
+-   **Some probes don't map to any gene** — they may be control probes or outdated sequences with no known gene symbol
+
+-   **Some probes are ambiguous** — they might match multiple genes
+
+```{r}
+# We do not want probes but genes
+# 1. Rename probes to gene symbols
+rownames(expr) <- features$Symbol[match(rownames(expr), features$ID)]
+
+# 2. Remove probes with no gene symbol
+dim(expr)
+expr <- expr[!is.na(rownames(expr)), ]
+dim(expr)
+
+# 3. Collapse: keep highest-expressed probe per gene
+expr <- expr[order(rowMeans(expr, na.rm = TRUE), decreasing = TRUE), ]
+expr <- expr[!duplicated(rownames(expr)), ]
+dim(expr)
+```
+
+```{r}
 colnames(pheno)
+```
+
+```{r}
+pheno <- pheno %>%
+  mutate(
+    time   = as.numeric(`duration overall survival:ch1`),
+    event  = as.numeric(`death:ch1`),
+    age    = as.numeric(`age:ch1`),
+    sex    = as.factor(`Sex:ch1`),
+    tstage = as.factor(`ptstage:ch1`),
+    nstage = as.factor(`pnstage:ch1`)
+  )
+
+# Filter out nan entries
+dim(pheno)
+pheno <- pheno[!is.na(pheno$time) & !is.na(pheno$event), ]
+dim(pheno)
+
+# We also filter out the corresponding expr values
+expr  <- expr[, rownames(pheno)]
+
+dim(pheno)
 ```
 
 Let us look at the columns essential for our analysis:
@@ -69,36 +151,364 @@ This is the **survival time** — how long the patient was followed from diagnos
 
 It's typically measured in **months** or **days**.
 
+# Covariates
+
+Before we look at the influence of the genes we will check the impact of the following covariates:
+
+-   sex: gender of the patient
+
+-   age
+
+-   tstage: tumour depth (T1–T4)
+
+-   nstage: lymph node involvement (N0–N3)
+
 ```{r}
-pheno$time  <- as.numeric(pheno$`duration overall survival:ch1`)
-pheno$event <- as.numeric(pheno$`death:ch1`)
+hist(pheno$age,
+     main  = "Age distribution",
+     xlab  = "Age (years)",
+     col   = "steelblue",
+     border = "white",
+     breaks = 20)
+```
+
+```{r}
+sex_counts <- table(pheno$sex)
+
+sex_df <- as.data.frame(sex_counts)
+colnames(sex_df) <- c("sex", "count")
+
+ggplot(sex_df, aes(x = "", y = count, fill = sex)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  labs(title = "Sex distribution") +
+  theme_void()
+
+```
+
+```{r}
+ggplot(pheno, aes(x = tstage)) +
+  geom_bar(fill = "steelblue", color = "white") +
+  labs(title = "T stage distribution", x = "T stage", y = "Count")
+```
+
+```{r}
+table(pheno$tstage)
+```
+
+Due to the low numbers in T1 and T2 we group them into early stage:
+
+```{r}
+pheno$tstage_collapsed <- as.factor(fct_collapse(pheno$tstage,
+  "T1_T2" = c("T1", "T2"),
+  "T3"    = "T3",
+  "T4"    = "T4"
+))
+```
+
+```{r}
+ggplot(pheno, aes(x = nstage)) +
+  geom_bar(fill = "steelblue", color = "white") +
+  labs(title = "N stage distribution", x = "N stage", y = "Count")
+
+```
+
+```{r}
+# Counts for each n stage
+table(pheno$nstage)
 ```
 
 ```{r}
 surv_object <- Surv(time  = pheno$time, event = pheno$event)
-```
 
-```{r}
-pheno <- pheno %>%
-  mutate(
-    time   = as.numeric(`duration overall survival:ch1`),
-    event  = as.numeric(`death:ch1`),
-    age    = as.numeric(`age:ch1`),
-    sex    = as.factor(`Sex:ch1`),
-    tstage = as.factor(`ptstage:ch1`),
-    nstage = as.factor(`pnstage:ch1`)
-  )
-```
-
-```{r}
-head(pheno$`age`)
-head(pheno$`sex`)
-```
-
-```{r}
-cox_model <- coxph(surv_object ~ age + sex, data = pheno)
-```
-
-```{r}
+cox_model <- coxph(surv_object ~ age + sex + tstage_collapsed + nstage, data = pheno)
 summary(cox_model)
+```
+
+According to this model we have:
+
+**Significant:**
+
+-   **Age** (p = 0.0004): each additional year increases hazard by \~2.3%.
+
+-   **N2**: HR = 2.55 (p \< 0.001)
+
+-   **N3**: HR = 3.10 (p \< 0.001)
+
+-   **N1**: still borderline (p = 0.093)
+
+-   **T3**: HR = 2.14 (p = 0.042) — 2× higher risk than early stage
+
+-   **T4**: HR = 3.27 (p = 0.0007) — 3.3× higher risk, very convincing
+
+**Not significant:**
+
+-   **Sex**: no meaningful effect (HR = 1.19, wide CI, p = 0.26) — consistent with literature
+
+-   **T2**: no meaningful effect
+
+```{r}
+ggcoxdiagnostics(cox_model, type = "dfbeta")
+```
+
+```{r}
+test_ph <- cox.zph(cox_model)
+print(test_ph)
+```
+
+We observe that the PH assumption is actually violated for both **T stage** (p=0.023) and **N stage** (p=0.047), and the global test confirms it (p=0.038). Age and sex are fine. The hazard ratio for stage is not constant over time. Early-stage patients may have similar short-term survival but diverge later, or high-stage patients have excess early mortality that diminishes over time.
+
+Therefore, we consider a model where we stratify over tstage and nstage. That is we assume a different baseline risk for different t stages and n stages.
+
+```{r}
+cox_model <- coxph(surv_object ~ age + sex + strata(tstage_collapsed) + strata(nstage), data = pheno)
+summary(cox_model)
+```
+
+**Age and sex estimates are stable:**
+
+-   Age HR = 1.022, virtually identical to before (was 1.023) — reassuring
+
+-   Sex still non-significant (p = 0.303) — consistent
+
+Let us also look again at the covariates nstage and tstage using Kaplan Maier curves to confirm that are significant.
+
+```{r}
+km_fit <- survfit(surv_object ~ nstage, data = pheno)
+
+ggsurvplot(
+  km_fit,
+  data          = pheno,
+  pval          = TRUE,        # log-rank p-value
+  conf.int      = TRUE,        # 95% CI ribbon
+  risk.table    = TRUE,        # number at risk below plot
+  legend.labs   = levels(pheno$nstage),
+  xlab          = "Time (months)",
+  ylab          = "Survival probability",
+  title         = "Kaplan-Meier Survival Curves by nstage"
+)
+```
+
+```{r}
+km_fit <- survfit(surv_object ~ tstage, data = pheno)
+
+ggsurvplot(
+  km_fit,
+  data          = pheno,
+  pval          = TRUE,        # log-rank p-value
+  conf.int      = TRUE,        # 95% CI ribbon
+  risk.table    = TRUE,        # number at risk below plot
+  legend.labs   = levels(pheno$tstage),
+  xlab          = "Time (months)",
+  ylab          = "Survival probability",
+  title         = "Kaplan-Meier Survival Curves by tstage"
+)
+```
+
+## Gene Expression Data
+
+```{r}
+# Let us check the metric of gene expression
+pheno$data_processing[1]
+```
+
+```{r}
+sum(is.na(pheno$time))
+sum(is.na(pheno$event))
+```
+
+```{r}
+# expr <- exprs(eset)    # matrix: rows = probes/genes, cols = patients
+# features <- fData(eset)  # probe ID → gene symbol mapping
+
+# We filtered out a few pheno rows so we filter them out
+# expr  <- expr[, rownames(pheno)]
+
+# Check what the gene symbol column is called
+dim(expr)
+dim(features)
+```
+
+```{r}
+expr <- expr[, rownames(pheno)]  # align patients
+
+# Some genes have no expression data
+# ToDo: double check
+dim(expr)
+expr <- expr[rowSums(!is.na(expr)) > 0, ]
+dim(expr)
+
+# Remove any rows with no symbol or empty string
+dim(expr)
+expr <- expr[!is.na(rownames(expr)) & rownames(expr) != "", ]
+dim(expr)
+```
+
+```{r}
+# Are there duplicates row names?
+sum(duplicated(rownames(expr)))
+```
+
+```{r}
+# We transfrom the gene expression to the log scale
+expr_log <- log2(expr + 1)
+```
+
+```{r}
+cox_pval <- function(gene_exp) {
+  # gene_exp: A vector of 433 expression values, one per patient
+  # Adds the expression values as a temporary column gene in pheno
+  # Now pheno has a column linking each patient to their expression level for this gene
+  pheno$gene <- gene_exp
+  tryCatch({
+    fit <- coxph(surv_object ~ gene + age + strata(tstage_collapsed) + strata(nstage), data = pheno)
+    summary(fit)$coefficients[1, 5]
+  }, error = function(e) NA)
+}
+
+results <- apply(expr_log, 1, cox_pval)
+
+head(results)
+```
+
+Before we continue let us check if the PH assumptions also hold for the genetic markers:
+
+```{r}
+gene_of_interest <- "LOXL4"  # replace with any gene of choice
+pheno$gene <- as.numeric(expr_log[gene_of_interest, ])
+# fit <- coxph(Surv(time, event) ~ gene + age, data = pheno)
+fit <- coxph(surv_object ~ gene + age + strata(tstage_collapsed) + strata(nstage), data = pheno)
+test_ph <- cox.zph(fit)
+plot(test_ph)  # For a visual check. This should resemble a flat line around 0
+```
+
+```{r}
+print(test_ph)
+```
+
+```{r}
+# FDR correction and filter
+results_df <- data.frame(
+  symbol  = names(results),
+  pval    = results,
+  fdr     = p.adjust(results, method = "BH")
+)
+
+# Let us see how many significant genes we found
+sig_genes <- results_df[results_df$fdr < 0.05, ]
+sig_genes <- sig_genes[order(sig_genes$fdr), ]
+nrow(sig_genes)
+```
+
+Let us look at some of them:
+
+```{r}
+head(sig_genes)
+```
+
+These genes associate with survival **independently of age, T stage, and N stage**.
+
+```{r}
+gene_of_interest <- "LOXL4"  # replace with any gene of choice
+pheno$gene <- as.numeric(expr_log[gene_of_interest, ])
+fit <- coxph(surv_object ~ gene + age + strata(tstage_collapsed) + strata(nstage), data = pheno)
+
+summary(fit)
+```
+
+Let us look at the distribution of the expression levels of LOXL4.
+
+```{r}
+pheno$LOXL4 <- as.numeric(expr_log["LOXL4", ])
+ggplot(pheno, aes(x = LOXL4 )) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  geom_vline(xintercept = median(pheno$LOXL4), 
+             color = "red", linetype = "dashed", linewidth = 0.8) +
+  labs(title = "LOXL4 expression distribution",
+       x     = "LOXL4 expression",
+       y     = "Count")
+
+```
+
+```{r}
+summary(as.numeric(expr_log["LOXL4", ]))
+```
+
+```{r}
+# We rescale from gene expression to standard deviation after log transformation. 
+# => Each HR represents the effect of a 1 standard deviation increase in expression
+pheno$LOXL4   <- scale(as.numeric(expr_log["LOXL4", ]))
+fit <- coxph(surv_object ~ LOXL4 + age + strata(tstage_collapsed) + strata(nstage), data = pheno)
+
+summary(fit)
+```
+
+Let us look at samples that influence the result overly.
+
+```{r}
+ggcoxdiagnostics(fit, type = "dfbeta")
+
+```
+
+```{r}
+mart_res <- residuals(fit, type = "martingale")
+
+plot(pheno$LOXL4, mart_res,
+     xlab = "LOXL4 expression (log2, scaled)",
+     ylab = "Martingale residuals",
+     main = "Linearity check for LOXL4")
+abline(h = 0, col = "red", lty = 2)
+lines(lowess(pheno$LOXL4, mart_res), col = "blue")
+```
+
+We identify the outliers.
+
+```{r}
+# Extract deviance residuals manually
+dev_res <- residuals(fit, type = "deviance")
+
+# Flag large residuals (rule of thumb: |deviance| > 2)
+outliers <- which(abs(dev_res) > 2)
+length(outliers)
+pheno[outliers, c("time", "event", "age", "tstage_collapsed", "nstage")]
+
+```
+
+Let us rerun the model and run it on the data without the outliers to assure the robustness of the result.
+
+```{r}
+# Remove outliers
+pheno$LOXL4   <- scale(as.numeric(expr_log["LOXL4", ]))
+pheno_clean <- pheno[!rownames(pheno) %in% names(outliers), ]
+
+# Refit on cleaned data
+
+fit_clean <- coxph(Surv(time, event) ~ LOXL4 + age + 
+                   strata(tstage_collapsed) + strata(nstage), 
+                   data = pheno_clean)
+
+summary(fit_clean)
+```
+
+This confirms that the result was not driven by the outliers.
+
+For illustration let us look at one Kaplan-Meier curve for LOXL4.
+
+```{r}
+pheno$LOXL4_group <- ifelse(pheno$LOXL4 > median(pheno$LOXL4), "High", "Low")
+pheno$LOXL4_group <- as.factor(pheno$LOXL4_group)
+
+km_fit_LOXL4 <- survfit(surv_object ~ LOXL4_group, data = pheno)
+
+ggsurvplot(
+  km_fit_LOXL4,
+  data       = pheno,
+  pval       = TRUE,
+  conf.int   = TRUE,
+  risk.table = TRUE,
+  legend.labs = c("High", "Low"),
+  xlab       = "Time (months)",
+  ylab       = "Survival probability",
+  title      = "Kaplan-Meier Survival Curves by LOXL4 expression"
+)
 ```
