@@ -27,10 +27,6 @@ library(forcats)
 library(survminer)
 ```
 
-------------------------------------------------------------------------
-
-------------------------------------------------------------------------
-
 ## Dataset
 
 GSE84437 includes gene expression profile data from 433 patients with primary gastric cancer. Alongside the gene expression data, it also contains detailed clinical characteristics such as gender, age, T stage, N stage, survival time, and survival status.
@@ -388,7 +384,7 @@ sig_genes <- sig_genes[order(sig_genes$fdr), ]
 nrow(sig_genes)
 ```
 
-Only one gene is significantly asssociated with a different survival rate.
+Only one gene is significantly associated with overall survival.
 
 ```{r}
 head(sig_genes)
@@ -457,7 +453,6 @@ Let us rerun the model and run it on the data without the outliers to assure the
 
 ```{r}
 # Remove outliers
-pheno$LOXL4   <- scale(as.numeric(expr_log["LOXL4", ]))
 pheno_clean <- pheno[!rownames(pheno) %in% names(outliers), ]
 
 # Refit on cleaned data
