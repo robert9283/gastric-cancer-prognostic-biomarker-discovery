@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+
+# GEO data — downloaded automatically by the notebook on first run
+data/
