@@ -3,3 +3,6 @@
 
 # GEO data — downloaded automatically by the notebook on first run
 data/
+
+# Literature folder — papers stored locally only
+literature/
